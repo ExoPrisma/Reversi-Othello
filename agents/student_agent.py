@@ -34,72 +34,92 @@ class StudentAgent(Agent):
 
     Please check the sample implementation in agents/random_agent.py or agents/human_agent.py for more details.
     """
+    # print("Step")
 
     start_time = time.time()
-    time_limit = 1.9 # Random agent.
-    # time_limit = 1.9    # Slight buffer under 2s for optimal move calculation.
+    time_limit = 0.5    # Buffer under 2s
+
+    empty_squares = np.sum(chess_board == 0)
+    board_size = chess_board.shape[0]
+    total_squares = board_size**2
+    
+    if empty_squares > int(total_squares * 0.5):      # Early game
+      depth = board_size // 2        
+      scale = 0.5
+    elif empty_squares > int(total_squares * 0.25):   # Mid game
+      depth = (2 * board_size) // 3  
+      scale = 1
+    else:                                             #Late game
+      depth = board_size             
+      scale = 2
 
     # Initialize root node
     root = Node(chess_board, player, None)
 
     # Iterative simulations until time runs out
-    depth = 1
     while time.time() - start_time < time_limit:
-      self._perform_simulations(root, player, opponent, depth, start_time)
-      depth += 1
+      self._perform_simulations(root, player, opponent, depth, start_time, time_limit)
 
     print(root)
-    best_child = self._select_best_move(root, player)
+    best_child = self._select_best_move(root, player, scale)
     if best_child:
       return best_child.move
     else:
       print("No valid moves available. Passing turn.")
       return None
     
-  def _perform_simulations(self, root, player, opponent, depth, start_time):
+  def _perform_simulations(self, root, player, opponent, depth, start_time, time_limit):
+    """Wrapper function for MCT steps"""
 
-    leaf = self._select(root)
-    if time.time() - start_time >= 1.9:
+    if time.time() - start_time >= time_limit:
       return
+
+    leaf = self._select(root) 
+    
     if not leaf.is_terminal():  # If it's not a leaf node
-      child = self._expand(leaf, player)
-      if time.time() - start_time >= 1.9:  # Check time before simulating
+        child = self._expand(leaf, player)
+        if time.time() - start_time >= time_limit:
           return
-      reward = self._simulate(child, player, opponent, depth)
-      self._backpropagate(child, reward)
+        reward = self._simulate(child, player, opponent, depth, start_time, time_limit)
+        self._backpropagate(child, reward)
     else:  # If it's a leaf node
-      reward = self._simulate(leaf, player, opponent, depth)
+      reward = self._simulate(leaf, player, opponent, depth, start_time, time_limit)
       self._backpropagate(leaf, reward)
 
   def _select(self, node):
-    """Select the most promising child using UCT."""
+    """Select the most promising child using UCT and alpha-beta pruning."""
     # print("Selecting...")
-    while node.children:
-        node = max(node.children, key=lambda x: x.uct())
-    return node
 
+    while node.children:
+      node = max(node.children, key=lambda x: x.uct())
+    return node
+    
   def _expand(self, node, player):
     """Expand all valid moves from the current node."""
     # print("Expanding...")
+    if node.children:
+        return np.random.choice(node.children)
 
     valid_moves = get_valid_moves(node.state, player)
-
     if not valid_moves:
-      return node  # If no valid moves, return the current node
-
+      return node
     for move in valid_moves:
-      new_state = deepcopy(node.state)
-      execute_move(new_state, move, player)
-      new_node = Node(new_state, 3 - player, move, parent=node)
-      node.children.append(new_node)
+        new_state = deepcopy(node.state)
+        execute_move(new_state, move, player)
+        new_node = Node(new_state, 3 - player, move, parent=node)
+        node.children.append(new_node)
+
+    if not node.children:
+        return node
 
     # Return a random child for exploration
+    # print(f"Expanded node with {len(node.children)} children.")
     return np.random.choice(node.children)
   
-  def _simulate(self, node, player, opponent, depth):
+  def _simulate(self, node, player, opponent, depth, start_time, time_limit):
     """
     Simulate a game from the given node using a semi-random strategy.
-    Moves that lead to very bad positions are discouraged during rollouts.
+    Moves that lead to very bad positions are discouraged during rollouts
     """
     # print("Simulating...")
 
@@ -108,21 +128,23 @@ class StudentAgent(Agent):
     current_depth = 0
 
     while current_depth < depth:
-      is_endgame, score1, score2 = check_endgame(current_state, current_player, opponent)
+      if time.time() - start_time < time_limit:  # Check time during simulating 
+        is_endgame, score1, score2 = check_endgame(current_state, current_player, opponent)
 
-      if is_endgame:
-        # Return the reward based on the simulation result
-        return 1 if score1 > score2 else -1 if score1 < score2 else 0
+        if is_endgame:
+          # Return the reward based on the simulation result
+          return 1 if score1 > score2 else -1 if score1 < score2 else 0
 
-      valid_moves = get_valid_moves(current_state, current_player)
+        valid_moves = get_valid_moves(current_state, current_player)
 
-      if valid_moves:
-        move = valid_moves[np.random.randint(len(valid_moves))]
-
-        execute_move(current_state, move, current_player)
+        if valid_moves:
+          move = valid_moves[np.random.randint(len(valid_moves))]
+          execute_move(current_state, move, current_player)
+        else:
+          current_player = 3 - current_player  # Pass turn if no valid moves
       else:
-        current_player = 3 - current_player  # Pass turn if no valid moves
-
+        return 0
+      
       current_player = 3 - current_player
       current_depth += 1
 
@@ -137,32 +159,28 @@ class StudentAgent(Agent):
     turn = node.player
 
     while node:
-      mobility = len(get_valid_moves(node.state, node.player))
-
       if node.player == turn:
         node.wins += reward
-        node.mobility += mobility
       else:
         node.wins += -reward
 
-      node.played += 1
       node.visits += 1
-
       node = node.parent
   
   # Heuristic move choice (See https://royhung.com/reversi)
-  def _select_best_move(self, node, player):
-    """Select the best move using adjusted UCT scores and domain knowledge."""
+  def _select_best_move(self, node, player, scale):
+    """Select the best move using adjusted UCT scores and domain knowledge given time in game"""
     best_score = float('-inf')
     best_child = None
 
     for child in node.children:
       # Adjusted UCT score calculation
       uct = child.uct()
-      inner_score = self._inner_score(uct, child.move)
+      inner_score = self._inner_score(uct, child.state, child.move)
       corner_score = self._corner_score(child.move, child.state)
-      greed_penalty = self._greed_penalty(child.state, player)
+      greed_penalty = self._greed_penalty(child.state, player, child.move, scale)
       position_penalty = self._position_penalty(child.state, uct, child.move)
+      mobility_score = self._mobility_score(child.state, child.move, player)
 
       # variables = {
       #   "uct": uct,
@@ -178,7 +196,14 @@ class StudentAgent(Agent):
       #   else:
       #       print(f"{name} is NOT a number: {value}")
 
-      adjusted_score = uct + inner_score + corner_score - greed_penalty - position_penalty 
+      adjusted_score = (
+        uct + 
+        inner_score + 
+        mobility_score +
+        corner_score - 
+        greed_penalty - 
+        position_penalty
+      )
 
       if adjusted_score > best_score:
         best_score = adjusted_score
@@ -186,40 +211,68 @@ class StudentAgent(Agent):
 
     return best_child
 
-  # Heuristics (See https://royhung.com/reversi)
-  def _inner_score(self, uct, move):
+  # Heuristics 
+  # Idea from website (See https://royhung.com/reversi)
+  def _inner_score(self, uct, board, move):
     """Encourage moves closer to the center."""
     i, j = move
-    a = 0.01  # Tunable parameter
+    middle = ((board.shape[0] - 1) / 2)
+    a = 0.001  # Tunable parameter
     numerator = a * uct
-    denomator = ((i - 3.5)**2 + (j - 3.5)**2)**0.5
+    denomator = np.sqrt((i - middle)**2 + (j - middle)**2)
     return numerator / denomator
   
+  # Idea from YouTube video (See https://youtu.be/sJgLi32jMo0?si=RLyWJO_KTgRF7A2G)
   def _corner_score(self, move, board):
     """Evaluate the move based on its proximity to corners."""
     corners = [(0, 0), (0, board.shape[1] - 1), (board.shape[0] - 1, 0), (board.shape[0] - 1, board.shape[1] - 1)]
     return 25 if move in corners else 0
+  
+  # Idea from chat gpt
+  def _mobility_score(self, board, move, player):
+    """
+    Calculate the mobility score for a given move.
+    Encourages moves that limit the opponent's options while maintaining flexibility.
+    """
+    e = 1 # Tunable constant
 
-  def _greed_penalty(self, board, player):
+    # Simulate the move
+    simulated_board = deepcopy(board)
+    execute_move(simulated_board, move, player)
+
+    opponent = 3 - player
+    opponent_moves = len(get_valid_moves(simulated_board, opponent))
+
+    my_moves = len(get_valid_moves(simulated_board, player))
+
+    return e * (my_moves - opponent_moves)
+
+  # Idea from website (See https://royhung.com/reversi)
+  def _greed_penalty(self, board, player, move, greediness):
     """Discourage flipping too many discs early in the game."""
-    b = 10  # Tunable parameter
+    b = 10 # Tunable parameter to increase greediness
+    b = 10 / greediness  # Scale parameters
 
     total_discs = np.sum(board > 0)
-    black_discs = np.sum(board == 1)
-    white_discs = np.sum(board == 2)
+
+    player_captures = count_capture(board, move, player)
+    
+    opponent = 3 - player
+    opponent_moves = get_valid_moves(board, opponent)
+    opponent_captures = max(
+      (count_capture(board, m, opponent) for m in opponent_moves),
+      default=0
+    )
+
     t = 1 if player == 1 else -1
-    greed_penalty = t * (black_discs - white_discs) / (total_discs + 1e-6)
+    greed_penalty = t * (player_captures - opponent_captures) / (total_discs + 1e-6)**b  # Avoid division by zero
 
-    opponent_moves = len(get_valid_moves(board, 3 - player))
-    my_moves = len(get_valid_moves(board, player))
-    mobility_penalty = (opponent_moves - my_moves) / (opponent_moves + my_moves + 1e-6)
-
-    return greed_penalty + mobility_penalty
-    # return greed_penalty / (b + total_discs) + mobility_penalty
-
+    return greed_penalty
+  
+  # Idea from website (See https://royhung.com/reversi)
   def _position_penalty(self, board, uct, move):
     """Discourage moves near corners or edges."""
-    c, d = 0.1, 0.1  # Tunable parameter
+    c, d = 0.5, 0.1  # Tunable parameter
     corners = [
         (0, 0),
         (0, board.shape[1] - 1),
@@ -243,31 +296,31 @@ class StudentAgent(Agent):
         return c * uct
     if move in c_squares:
         return d * uct
-    return 0
+    return 0  
 
 class Node:
   def __init__(self, state, player, move, parent=None):
-    self.state = state    # Game state at node
-    self.player = player  # Player whose turn it is
-    self.move = move      # Move that led to this state
-    self.parent = parent  # Reference to the parent node
-    self.children = []    # List of child nodes
-    self.visits = 0       # Total visits to this node
-    self.wins = 0         # Number of wins from simulations through this node
-    self.mobility = 0     # Mobility score: sum of valid moves
-    self.played = 0       # Number of games played through this node
+    self.state = state          # Game state at node
+    self.player = player        # Player whose turn it is
+    self.move = move            # Move that led to this state
+    self.parent = parent        # Reference to the parent node
+    self.children = []          # List of child nodes
+    self.visits = 0             # Total visits to this node
+    self.wins = 0               # Number of wins from simulations through this node
+    self.mobility = 0           # Mobility score: sum of valid moves
 
   def is_terminal(self):
-    # Check if node is terminal, i.e. leaf
+    """Leaf (Terminal) check"""
     valid_moves = get_valid_moves(self.state, self.player)
     return len(valid_moves) == 0
 
   def uct(self):
     """Upper Confidence Bound for Trees."""
+    c = np.sqrt(2)
     if self.visits == 0:
       return float('inf')
     
-    return self.wins / self.visits + np.sqrt(2 * np.log(self.parent.visits) / self.visits)
+    return self.wins / self.visits + (c * np.sqrt(2 * np.log(self.parent.visits) / self.visits))
 
   def __str__(self):
     """String representation of the node, printing useful information."""
@@ -275,5 +328,4 @@ class Node:
     state_str = str(self.state)  # You can format this as you like to show the board
     return (f"Node(State:\n{state_str}\nPlayer: {self.player}, "
             f"Move: {self.move}, Wins: {self.wins}, Mobility: {self.mobility}, "
-            f"Played: {self.played}, Visits: {self.visits})")
-
+            f"Visits: {self.visits})")

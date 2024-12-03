@@ -59,19 +59,20 @@ class StudentAgent(Agent):
 
     # Iterative simulations until time runs out
     while time.time() - start_time < time_limit:
-      self._perform_simulations(root, player, opponent, depth, start_time, time_limit)
+      self._perform_simulations(root, player, opponent, depth, start_time, time_limit, scale)
 
-    
+    print(time.time() - start_time)
 
     print(root)
     best_child = self._select_best_move(root, player, scale)
     if best_child:
+      print(time.time() - start_time)
       return best_child.move
     else:
       print("No valid moves available. Passing turn.")
       return None
     
-  def _perform_simulations(self, root, player, opponent, depth, start_time, time_limit):
+  def _perform_simulations(self, root, player, opponent, depth, start_time, time_limit, scale):
     """Wrapper function for MCT steps"""
 
     if time.time() - start_time >= time_limit:
@@ -80,11 +81,11 @@ class StudentAgent(Agent):
     leaf = self._select(root) 
     
     if not leaf.is_terminal():  # If it's not a leaf node
-        child = self._expand(leaf, player)
-        if time.time() - start_time >= time_limit:
-          return
-        reward = self._simulate(child, player, opponent, depth, start_time, time_limit)
-        self._backpropagate(child, reward)
+      child = self._expand(leaf, player, scale)
+      if time.time() - start_time >= time_limit:
+        return
+      reward = self._simulate(child, player, opponent, depth, start_time, time_limit)
+      self._backpropagate(child, reward)
     else:  # If it's a leaf node
       reward = self._simulate(leaf, player, opponent, depth, start_time, time_limit)
       self._backpropagate(leaf, reward)
@@ -97,27 +98,34 @@ class StudentAgent(Agent):
       node = max(node.children, key=lambda x: x.uct())
     return node
     
-  def _expand(self, node, player):
+  def _expand(self, node, player, scale):
     """Expand all valid moves from the current node."""
     # print("Expanding...")
-    if node.children:
-        return np.random.choice(node.children)
-
     valid_moves = get_valid_moves(node.state, player)
+
     if not valid_moves:
       return node
+    
+    moves_with_scores = []
     for move in valid_moves:
-        new_state = deepcopy(node.state)
-        execute_move(new_state, move, player)
-        new_node = Node(new_state, 3 - player, move, parent=node)
-        node.children.append(new_node)
+      corner_score = self._corner_score(move, node.state, 1)
+      mobility_score = self._mobility_score(node.state, move, player, 1)
+      greed_penalty = self._greed_penalty(node.state, player, move, scale)
+      
+      combined_score = (corner_score + mobility_score - greed_penalty)
 
-    if not node.children:
-        return node
+      moves_with_scores.append((move, combined_score))
+    
+    moves_with_scores.sort(key=lambda x: x[1], reverse=True)
 
-    # Return a random child for exploration
+    for move, _ in moves_with_scores[:3]:
+      new_state = deepcopy(node.state)
+      execute_move(new_state, move, player)
+      new_node = Node(new_state, 3 - player, move, parent=node)
+      node.children.append(new_node)
+
     # print(f"Expanded node with {len(node.children)} children.")
-    return np.random.choice(node.children)
+    return node.children[0] if node.children else node
   
   def _simulate(self, node, player, opponent, depth, start_time, time_limit):
     """
@@ -182,10 +190,10 @@ class StudentAgent(Agent):
       # Adjusted UCT score calculation
       uct = child.uct()
       inner_score = self._inner_score(uct, child.state, child.move, scale)
-      corner_score = self._corner_score(child.move, child.state, scale)
+      corner_score = self._corner_score(child.move, child.state, 1)
       greed_penalty = self._greed_penalty(child.state, player, child.move, scale)
       position_penalty = self._position_penalty(child.state, uct, child.move, scale)
-      mobility_score = self._mobility_score(child.state, child.move, player, scale)
+      mobility_score = self._mobility_score(child.state, child.move, player, 1)
 
       # variables = {
       #   "uct": uct,

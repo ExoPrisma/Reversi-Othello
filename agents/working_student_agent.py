@@ -8,15 +8,15 @@ from copy import deepcopy
 import time
 from helpers import random_move, count_capture, execute_move, check_endgame, get_valid_moves
 
-@register_agent("student_agent")
-class StudentAgent(Agent):
+@register_agent("working_student_agent")
+class WorkingStudentAgent(Agent):
   """
   A class for your implementation. Feel free to use this class to
   add any helper functionalities needed for your agent.
   """
 
   def __init__(self):
-    super(StudentAgent, self).__init__()
+    super(WorkingStudentAgent, self).__init__()
     self.name = "StudentAgent"
 
   def step(self, chess_board, player, opponent):
@@ -38,16 +38,16 @@ class StudentAgent(Agent):
     # print("Step")
 
     start_time = time.time()
-    time_limit = 0.5    # Buffer under 2s
+    time_limit = 1.7    # Buffer under 2s
 
-    played_squares = np.sum(chess_board > 0)
+    empty_squares = np.sum(chess_board == 0)
     board_size = chess_board.shape[0]
     total_squares = board_size**2
     
-    if played_squares < int(total_squares * 0.25):      # Early game
+    if empty_squares > int(total_squares * 0.9):      # Early game
       depth = board_size // 2        
       scale = 1
-    elif played_squares < int(total_squares * 0.5):   # Mid game
+    elif empty_squares > int(total_squares * 0.75):   # Mid game
       depth = (2 * board_size) // 3  
       scale = 2
     else:                                             # Late game
@@ -61,12 +61,12 @@ class StudentAgent(Agent):
     while time.time() - start_time < time_limit:
       self._perform_simulations(root, player, opponent, depth, start_time, time_limit, scale)
 
-    print(time.time() - start_time)
+    # print(time.time() - start_time)
 
-    print(root)
-    best_child = self._select_best_move(root, scale)
+    # print(root)
+    best_child = self._select_best_move(root, player, scale)
     if best_child:
-      print(time.time() - start_time)
+      # print(time.time() - start_time)
       return best_child.move
     else:
       print("No valid moves available. Passing turn.")
@@ -108,13 +108,17 @@ class StudentAgent(Agent):
     
     moves_with_scores = []
     for move in valid_moves:
-      combined_score = self._combined_heuristics(node.state, move, player, scale)
+      corner_score = self._corner_score(move, node.state, 1)
+      mobility_score = self._mobility_score(node.state, move, player, 1)
+      greed_penalty = self._greed_penalty(node.state, player, move, scale)
+      
+      combined_score = (corner_score + mobility_score - greed_penalty)
 
       moves_with_scores.append((move, combined_score))
     
     moves_with_scores.sort(key=lambda x: x[1], reverse=True)
 
-    for move, _ in moves_with_scores[:5]:
+    for move, _ in moves_with_scores[:3]:
       new_state = deepcopy(node.state)
       execute_move(new_state, move, player)
       new_node = Node(new_state, 3 - player, move, parent=node)
@@ -136,7 +140,7 @@ class StudentAgent(Agent):
     board_size = node.state.shape[0]
 
     while current_depth < depth:
-      if time.time() - start_time >= 0.9 * time_limit:
+      if time.time() - start_time >= time_limit:
         break
       
       is_endgame, score1, score2 = check_endgame(current_state, current_player, opponent)
@@ -176,183 +180,123 @@ class StudentAgent(Agent):
       node.visits += 1
       node = node.parent
 
-  # UCT selection
-  def _select_best_move(self, node, scale):
+  # Heuristic move choice (See https://royhung.com/reversi)
+  def _select_best_move(self, node, player, scale):
     """Select the best move using adjusted UCT scores and domain knowledge given time in game"""
     best_score = float('-inf')
     best_child = None
 
     for child in node.children:
       # Adjusted UCT score calculation
-      ajusted_uct = child.uct() + self._combined_heuristics(child.state, child.move, child.player, scale)
+      uct = child.uct()
+      inner_score = self._inner_score(uct, child.state, child.move, scale)
+      corner_score = self._corner_score(child.move, child.state, 1)
+      greed_penalty = self._greed_penalty(child.state, player, child.move, scale)
+      position_penalty = self._position_penalty(child.state, uct, child.move, scale)
+      mobility_score = self._mobility_score(child.state, child.move, player, 1)
 
-      if ajusted_uct > best_score:
-        best_score = ajusted_uct
+      # variables = {
+      #   "uct": uct,
+      #   "inner_score": inner_score,
+      #   "corner_score": corner_score,
+      #   "mobility_score": mobility_score,
+      #   "greed_penalty": greed_penalty,
+      #   "position_penalty": position_penalty
+      # }
+      # print("Score")
+
+      # for name, value in variables.items():
+      #   if isinstance(value, numbers.Number):
+      #       print(f"{name} is a number: {value}")
+      #   else:
+      #       print(f"{name} is NOT a number: {value}")
+
+      adjusted_score = (
+        uct + 
+        inner_score + 
+        corner_score +
+        mobility_score -
+        greed_penalty - 
+        position_penalty
+      )
+
+      if adjusted_score > best_score:
+        best_score = adjusted_score
         best_child = child
 
     return best_child
 
   # Heuristics 
-  def _combined_heuristics(self, board, move, player, scale):
-    """Combine multiple heuristics into a single score."""
-
-    corner_score = self._corner_score(board, move)
-    inner_score = self._inner_score(board, move)
-    mobility_score = self._mobility_score(board, move, player, scale)
-    stability_score = self._stability_score(board, move, player)
-    greed_penalty = self._greed_penalty(board, move, player, scale)
-    position_penalty = self._position_penalty(board, move)
-
-    # variables = {
-    #   "corner_score": corner_score,
-    #   "inner_score": inner_score,
-    #   "mobility_score": mobility_score,
-    #   "stability_score": stability_score,
-    #   "greed_penalty": greed_penalty,
-    #   "position_penalty": position_penalty
-    # }
-    # print("Score")
-
-    # for name, value in variables.items():
-    #   if isinstance(value, numbers.Number):
-    #       print(f"{name} is a number: {value}")
-    #   else:
-    #       print(f"{name} is NOT a number: {value}")
-
-    return (
-      inner_score +
-      2 * corner_score +
-      mobility_score +
-      stability_score -
-      greed_penalty - 
-      position_penalty
-    )
-  
-  def _normalize(self, score, min_value, max_value):
-    """Normalize a score to the range [0, 1]."""
-    if max_value == min_value:  # Avoid division by zero
-        return 0
-    return (score - min_value) / (max_value - min_value)
-  
   # Idea from website (See https://royhung.com/reversi)
-  def _inner_score(self, board, move):
-    """
-    Encourage moves closer to the center.
-    During the early game and midgame and less in the endgame.
-    """
+  def _inner_score(self, uct, board, move, scale):
+    """Encourage moves closer to the center."""
     i, j = move
     middle = ((board.shape[0] - 1) / 2)
-    max_distance = np.sqrt(2 * (board.shape[0] - 1)**2)
+    a = 5 / scale # Tunable parameter - Decrease
 
-    distance = np.sqrt((i - middle)**2 + (j - middle)**2)
-    raw_score = 10 / (distance + 1)     # Avoid division by 0
+    numerator = a * uct
+    denomator = np.sqrt((i - middle)**2 + (j - middle)**2)
 
-    normalized_score = self._normalize(raw_score, 0, max_distance)
-    return normalized_score
-
+    return numerator / denomator
+  
   # Idea from YouTube video (See https://youtu.be/sJgLi32jMo0?si=RLyWJO_KTgRF7A2G)
-  def _stability_score(self, board, move, player):
-    """
-    Encourage moves in stable positions (edges, corners).
-    Throughout the game.
-    """
-    simulated_board = deepcopy(board)
-    execute_move(simulated_board, move, player)
-
-    rows, cols = simulated_board.shape
-    opponent = 3 - player
-    max_score = 20 * 4 + 10 * (rows + cols - 8)
+  def _corner_score(self, move, board, scale):
+    """Evaluate the move based on its proximity to corners."""
+    b = 100 * scale # Tunable parameters - Increase
     
-    score = 0
-    corners = [(0, 0), (0, cols - 1), (rows - 1, 0), (rows - 1, cols - 1)]
-    for corner in corners:
-        if simulated_board[corner] == player:
-            score += 20
-        elif simulated_board[corner] == opponent:
-            score -= 20
-
-    edges = [(i, 0) for i in range(1, rows - 1)] + [(i, cols - 1) for i in range(1, rows - 1)] + \
-            [(0, j) for j in range(1, cols - 1)] + [(rows - 1, j) for j in range(1, cols - 1)]
-    for edge in edges:
-        if simulated_board[edge] == player:
-            score += 10
-        elif simulated_board[edge] == opponent:
-            score -= 10
-
-    return self._normalize(score, -max_score, max_score)
-
-  # Idea from YouTube video (See https://youtu.be/sJgLi32jMo0?si=RLyWJO_KTgRF7A2G)
-  def _corner_score(self, board, move):
-    """
-    Encourage (Strongly) moves in corners.
-    Throughout the game.
-    """
     corners = [
-        (0, 0), 
-        (0, board.shape[1] - 1), 
-        (board.shape[0] - 1, 0), 
-        (board.shape[0] - 1, board.shape[1] - 1)
+      (0, 0), 
+      (0, board.shape[1] - 1), 
+      (board.shape[0] - 1, 0), 
+      (board.shape[0] - 1, board.shape[1] - 1)
     ]
-    raw_score = 15 if move in corners else 0
 
-    return self._normalize(raw_score, 0, 15)
+    return b if move in corners else 0
   
   # Idea from chat gpt
   def _mobility_score(self, board, move, player, scale):
     """
+    Calculate the mobility score for a given move.
     Encourages moves that limit the opponent's options while maintaining flexibility.
-    During the early and midgame and less in the endgame to prioritize startegic position.
     """
+    e = 5 / scale # Tunable constant - Decrease
+
+    # Simulate the move
     simulated_board = deepcopy(board)
     execute_move(simulated_board, move, player)
 
     opponent = 3 - player
     opponent_moves = len(get_valid_moves(simulated_board, opponent))
 
-    my_moves = len(get_valid_moves(simulated_board, player))  
+    my_moves = len(get_valid_moves(simulated_board, player))
 
-    raw_score = my_moves - opponent_moves
-    max_moves = np.sum(board == 0)  # Max possible moves
-    normalized_score = self._normalize(raw_score, -max_moves, max_moves)
-
-    return normalized_score / scale
+    return e * (my_moves - opponent_moves)
 
   # Idea from website (See https://royhung.com/reversi)
-  def _greed_penalty(self, board, move, player, scale):
-    """
-    Discourage flipping too many discs early in the game.
-    During the early game and more during the midgame and endgame to capture more pieces.
-    """
+  def _greed_penalty(self, board, player, move, scale):
+    """Discourage flipping too many discs early in the game."""
+    c = 1 / scale # Tunable parameter - Decrease
 
     total_discs = np.sum(board > 0)
+
     player_captures = count_capture(board, move, player)
-
-    simulated_board = deepcopy(board)
-    execute_move(simulated_board, move, player)
-
+    
     opponent = 3 - player
-    opponent_moves = get_valid_moves(simulated_board, opponent)
+    opponent_moves = get_valid_moves(board, opponent)
     opponent_captures = max(
-        (count_capture(simulated_board, m, opponent) for m in opponent_moves),
-        default=0
+      (count_capture(board, m, opponent) for m in opponent_moves),
+      default=0
     )
 
-    raw_score = player_captures - opponent_captures
-    max_captures = total_discs
-    normalized_score = self._normalize(raw_score, -max_captures, max_captures)
+    t = 1 if player == 1 else -1
+    greed_penalty = t * (player_captures - opponent_captures) / (total_discs + 1e-6)**c  # Avoid division by zero
 
-    return normalized_score * scale
+    return greed_penalty
   
   # Idea from website (See https://royhung.com/reversi)
-  def _position_penalty(self, board, move):
-    """
-    Discourage moves near corners or edges.
-    Throughout the entire game.
-    """
-    rows, cols = board.shape
-    max_penalty = 10 * 4 + 5 * (2 * (rows + cols) - 8)
-
-    e, f = 10 , 5 # Tunable parameter
+  def _position_penalty(self, board, uct, move, scale):
+    """Discourage moves near corners or edges."""
+    d, e = 1 / scale , 0.01 / scale # Tunable parameter - Decrease
 
     corners = [
         (0, 0),
@@ -373,15 +317,11 @@ class StudentAgent(Agent):
 
     c_squares = [sq for sq in c_squares if sq is not None]
 
-    penalty = 0
     if move in x_squares:
-        penalty += e
-    elif move in c_squares:
-        penalty += f
-
-    normalized_penalty = self._normalize(penalty, 0, max_penalty)
-
-    return normalized_penalty 
+        return d * uct
+    if move in c_squares:
+        return e * uct
+    return 0  
 
 class Node:
   def __init__(self, state, player, move, parent=None):
